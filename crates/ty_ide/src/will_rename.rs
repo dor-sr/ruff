@@ -53,7 +53,7 @@ use ty_python_semantic::{DefinitionResolution, HasType, SemanticModel};
 /// Edits refer to the original files and source ranges. Unsupported or ambiguous occurrences are
 /// omitted, so a non-empty result does not imply that every reference was updated. The caller must
 /// sort the edits and handle duplicates and overlaps before applying them.
-fn will_rename_files(
+pub fn will_rename_files(
     db: &dyn Db,
     renames: &[FileRename],
     files: impl IntoIterator<Item = File>,
@@ -75,15 +75,15 @@ fn will_rename_files(
 }
 
 /// One Python file rename in a batch.
-struct FileRename {
+pub struct FileRename {
     /// The source file before the rename.
-    file: File,
+    pub file: File,
     /// The destination path, which need not exist yet.
-    new_path: SystemPathBuf,
+    pub new_path: SystemPathBuf,
 }
 
 /// A replacement and the file range containing it.
-type FileRenameEdit = RangedValue<String>;
+pub type FileRenameEdit = RangedValue<String>;
 
 struct RenamePlan {
     // A map from old module name to new module name for supported rename operations.
