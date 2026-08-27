@@ -163,6 +163,22 @@ pub(super) struct ImplicitAliasInference<'db> {
     pub(super) implicit_aliases: Box<[Definition<'db>]>,
 }
 
+/// Returns recorded name-load resolutions, inferring the scope as needed.
+///
+/// Returns `None` without running inference if recording is disabled in the database.
+pub(crate) fn name_load_resolutions_from_inference<'db>(
+    db: &'db dyn Db,
+    scope: ScopeId<'db>,
+) -> Option<&'db FrozenMap<ExpressionNodeKey, DefinitionResolution<'db>>> {
+    if !crate::db::should_record_place_loads(db) {
+        return None;
+    }
+    infer_complete_scope_types(db, scope)
+        .extra
+        .as_deref()
+        .and_then(|extra| extra.name_load_resolutions.as_deref())
+}
+
 bitflags::bitflags! {
     /// Metadata for expressions inferred as type expressions.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
