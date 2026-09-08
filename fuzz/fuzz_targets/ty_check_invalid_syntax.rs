@@ -69,6 +69,10 @@ impl TestDb {
             .expect("Valid search path settings");
         search_paths.try_register_static_roots(&db);
         db.program_settings.search_paths = search_paths;
+        ty_python_semantic::initialize_place_load_recording(
+            &db,
+            ty_python_semantic::PlaceLoadRecordingMode::default(),
+        );
 
         db
     }

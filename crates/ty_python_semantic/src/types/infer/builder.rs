@@ -35,6 +35,7 @@ use super::{
     infer_unpack_types,
 };
 use crate::diagnostic::format_enumeration;
+use crate::place::definitions::{DefinitionResolution, DefinitionResolutionBuilder};
 use crate::place::{
     ConsideredDefinitions, DefinedPlace, Definedness, LookupError, Place, PlaceAndQualifiers,
     RequiresExplicitReExport, TypeOrigin, builtins_module_scope, class_body_implicit_symbol,
@@ -316,6 +317,9 @@ pub(super) struct TypeInferenceBuilder<'db, 'ast> {
     /// Expected types for expression nodes tracked for IDE completion.
     expected_types: FxHashMap<ExpressionNodeKey, Type<'db>>,
 
+    /// Name-load resolutions retained only when recording is enabled in the database.
+    name_load_resolutions: FxHashMap<ExpressionNodeKey, DefinitionResolution<'db>>,
+
     /// The scope this region is part of.
     scope: ScopeId<'db>,
 
@@ -520,6 +524,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             collection_use_constraints: FxHashMap::default(),
             string_annotations: FxHashSet::default(),
             expected_types: FxHashMap::default(),
+            name_load_resolutions: FxHashMap::default(),
             bindings: VecMap::default(),
             declarations: VecMap::default(),
             typevar_binding_context: None,
@@ -606,6 +611,10 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
 
         if let Some(extra) = &inference.extra {
             match extra.as_ref() {
+                DefinitionInferenceExtra::NameLoadResolutions(resolutions) => {
+                    self.name_load_resolutions
+                        .extend(resolutions.iter().cloned());
+                }
                 DefinitionInferenceExtra::Qualifiers(qualifiers) => {
                     self.qualifiers.extend(qualifiers.iter().copied());
                 }
@@ -636,6 +645,10 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                         .extend(extra.implicit_aliases.iter().copied());
                     self.comparison_truthiness
                         .extend(extra.comparison_truthiness.iter().copied());
+                    if let Some(name_load_resolutions) = &extra.name_load_resolutions {
+                        self.name_load_resolutions
+                            .extend(name_load_resolutions.iter().cloned());
+                    }
                     self.called_functions
                         .extend(extra.called_functions.iter().copied());
                     self.extend_cycle_recovery(extra.cycle_recovery);
@@ -689,6 +702,10 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 .extend(extra.implicit_aliases.iter().copied());
             self.comparison_truthiness
                 .extend(extra.comparison_truthiness.iter().copied());
+            if let Some(name_load_resolutions) = &extra.name_load_resolutions {
+                self.name_load_resolutions
+                    .extend(name_load_resolutions.iter().cloned());
+            }
             self.called_functions
                 .extend(extra.called_functions.iter().copied());
             self.return_types_and_ranges
@@ -746,6 +763,10 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         if let Some(extra) = &inference.extra {
             self.implicit_aliases
                 .extend(extra.implicit_aliases.iter().copied());
+            if let Some(name_load_resolutions) = &extra.name_load_resolutions {
+                self.name_load_resolutions
+                    .extend(name_load_resolutions.iter().cloned());
+            }
             self.comparison_truthiness
                 .extend(extra.comparison_truthiness.iter().copied());
             self.context.extend(&extra.diagnostics);
@@ -773,6 +794,12 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
     }
 
     fn extend_expression_cache_entry(&mut self, inference: &FullExpressionCacheEntry<'db>) {
+        self.name_load_resolutions.extend(
+            inference
+                .name_load_resolutions
+                .iter()
+                .map(|(key, resolution)| (*key, resolution.clone())),
+        );
         #[cfg(debug_assertions)]
         assert_eq!(self.scope, inference.scope);
 
@@ -827,6 +854,10 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         if let Some(extra) = &inference.extra {
             self.implicit_aliases
                 .extend(extra.implicit_aliases.iter().copied());
+            if let Some(name_load_resolutions) = &extra.name_load_resolutions {
+                self.name_load_resolutions
+                    .extend(name_load_resolutions.iter().cloned());
+            }
             self.context.extend(&extra.diagnostics);
             self.extend_cycle_recovery(extra.cycle_recovery);
             self.string_annotations
@@ -10477,7 +10508,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
     ///
     /// This also returns the [`ConstraintKey`]s used by expression-level narrowing.
     fn infer_place_load(
-        &self,
+        &mut self,
         place_expr: PlaceExpr,
         expr_ref: ast::ExprRef,
     ) -> (PlaceAndQualifiers<'db>, Vec<(FileScopeId, ConstraintKey)>) {
@@ -10494,10 +10525,18 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         let mut place = PlaceAndQualifiers::from(Place::Undefined);
         let mut failure = None;
         let mut checked_deprecated = false;
+        let mut definition_resolution = (expr_ref.is_name_expr()
+            && crate::db::should_record_place_loads(self.db()))
+        .then(DefinitionResolutionBuilder::new);
 
         while let Some(step) = resolution.next() {
             match step {
                 PlaceLoadResolutionStep::Source(source) => {
+                    // Record only sources visited by inference. A definitely bound value stops
+                    // the lookup, so later fallback definitions must not enter this record.
+                    if let Some(definitions) = definition_resolution.as_mut() {
+                        definitions.add_source(self.db(), env, self.scope(), &source);
+                    }
                     if !checked_deprecated && source.is_post_lexical() {
                         // Deprecation diagnostics apply to the result of lexical name resolution,
                         // before it is combined with implicit module globals or builtins. Hence, we
@@ -10545,6 +10584,16 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         } else {
             place
         };
+
+        if let Some(mut definitions) = definition_resolution {
+            if failure == Some(PlaceLoadFailure::NotFound) {
+                definitions.mark_incomplete();
+            }
+            self.name_load_resolutions.insert(
+                expr_ref.into(),
+                definitions.finish(resolution.crosses_scope_declaration()),
+            );
+        }
 
         let constraint_keys = resolution.into_constraints();
 
@@ -11839,6 +11888,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             type_expression_flags,
             collection_use_constraints,
             string_annotations,
+            name_load_resolutions,
             expected_types,
             scope,
             bindings,
@@ -11877,6 +11927,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
 
         FullExpressionCacheEntry {
             implicit_aliases,
+            name_load_resolutions,
             expressions,
             comparison_truthiness,
             type_expression_flags,
@@ -11904,6 +11955,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             type_expression_flags,
             mut collection_use_constraints,
             string_annotations,
+            name_load_resolutions,
             expected_types,
             scope,
             bindings,
@@ -11934,6 +11986,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         let extra = (!implicit_aliases.is_empty()
             || !diagnostics.is_empty()
             || !comparison_truthiness.is_empty()
+            || !name_load_resolutions.is_empty()
             || !string_annotations.is_empty()
             || cycle_recovery.is_some()
             || !expected_types.is_empty()
@@ -11949,6 +12002,8 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             Box::new(StatementInferenceInnerExtra {
                 implicit_aliases: implicit_aliases.into_iter().collect(),
                 comparison_truthiness: FrozenMap::from(comparison_truthiness),
+                name_load_resolutions: (!name_load_resolutions.is_empty())
+                    .then(|| Box::new(FrozenMap::from(name_load_resolutions))),
                 string_annotations: FrozenSet::from(string_annotations),
                 expected_types: FrozenMap::from(expected_types),
                 called_functions: called_functions
@@ -12028,6 +12083,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             deferred: _,
             scope: _,
             string_annotations: _,
+            name_load_resolutions,
             expected_types: _,
             return_types_and_ranges: _,
             collection_use_constraints: _,
@@ -12047,6 +12103,8 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
 
         FunctionDecoratorInference {
             implicit_aliases: implicit_aliases.into_iter().collect(),
+            name_load_resolutions: (!name_load_resolutions.is_empty())
+                .then(|| Box::new(FrozenMap::from(name_load_resolutions))),
             expression_types: FrozenMap::from(expressions),
             bindings: bindings.into_boxed_slice(),
             called_functions: called_functions
@@ -12077,6 +12135,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             type_expression_flags,
             mut collection_use_constraints,
             string_annotations,
+            name_load_resolutions,
             expected_types,
             scope,
             bindings,
@@ -12105,6 +12164,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         let non_undecorated_extra_field_count = usize::from(!string_annotations.is_empty())
             + usize::from(!implicit_aliases.is_empty())
             + usize::from(!comparison_truthiness.is_empty())
+            + usize::from(!name_load_resolutions.is_empty())
             + usize::from(!expected_types.is_empty())
             + usize::from(!collection_use_constraints.is_empty())
             + usize::from(!called_functions.is_empty())
@@ -12118,6 +12178,11 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
 
         let extra = match (non_undecorated_extra_field_count, undecorated_type) {
             (0, None) => None,
+            (1, None) if !name_load_resolutions.is_empty() => {
+                Some(Box::new(DefinitionInferenceExtra::NameLoadResolutions(
+                    FrozenMap::from(name_load_resolutions),
+                )))
+            }
             (1, None) if !qualifiers.is_empty() => Some(Box::new(
                 DefinitionInferenceExtra::Qualifiers(FrozenMap::from(qualifiers)),
             )),
@@ -12160,6 +12225,8 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 let extra = OtherDefinitionInferenceExtra {
                     implicit_aliases: implicit_aliases.into_iter().collect(),
                     comparison_truthiness: FrozenMap::from(comparison_truthiness),
+                    name_load_resolutions: (!name_load_resolutions.is_empty())
+                        .then(|| Box::new(FrozenMap::from(name_load_resolutions))),
                     string_annotations: FrozenSet::from(string_annotations),
                     expected_types: FrozenMap::from(expected_types),
                     collection_use_constraints,
@@ -12218,6 +12285,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             implicit_aliases,
             context,
             string_annotations,
+            name_load_resolutions,
             expected_types,
             type_expression_flags,
             mut collection_use_constraints,
@@ -12254,6 +12322,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
 
         let extra = (!implicit_aliases.is_empty()
             || !string_annotations.is_empty()
+            || !name_load_resolutions.is_empty()
             || !expected_types.is_empty()
             || !diagnostics.is_empty()
             || cycle_recovery.is_some()
@@ -12264,6 +12333,8 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             collection_use_constraints.shrink_to_fit();
             Box::new(ScopeInferenceExtra {
                 implicit_aliases: implicit_aliases.into_iter().collect(),
+                name_load_resolutions: (!name_load_resolutions.is_empty())
+                    .then(|| Box::new(FrozenMap::from(name_load_resolutions))),
                 string_annotations: FrozenSet::from(string_annotations),
                 qualifiers: FrozenMap::from(qualifiers),
                 expected_types: FrozenMap::from(expected_types),
@@ -12310,6 +12381,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             expressions: _,
             comparison_truthiness: _,
             string_annotations: _,
+            name_load_resolutions: _,
             expected_types: _,
             scope: _,
             bindings: _,
@@ -12374,6 +12446,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             type_expression_flags,
             collection_use_constraints,
             string_annotations,
+            name_load_resolutions,
             expected_types,
             scope,
             bindings,
@@ -12412,6 +12485,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         );
 
         self.extend_expression_types(expressions);
+        self.name_load_resolutions.extend(name_load_resolutions);
         self.comparison_truthiness.extend(comparison_truthiness);
         self.context.extend(&diagnostics);
         self.extend_cycle_recovery(cycle_recovery);
@@ -12540,6 +12614,7 @@ enum ExpressionCacheEntry<'db> {
 /// that is otherwise performed for Salsa results.
 struct FullExpressionCacheEntry<'db> {
     implicit_aliases: FxIndexSet<Definition<'db>>,
+    name_load_resolutions: FxHashMap<ExpressionNodeKey, DefinitionResolution<'db>>,
     expressions: FxHashMap<ExpressionNodeKey, Type<'db>>,
     comparison_truthiness: FxHashMap<ExpressionNodeKey, Truthiness>,
     type_expression_flags: FxHashMap<ExpressionNodeKey, TypeExpressionFlags>,
@@ -12566,6 +12641,7 @@ impl<'db> FullExpressionCacheEntry<'db> {
     fn is_single_expression(&self, expression: ExpressionNodeKey, ty: Type<'db>) -> bool {
         self.implicit_aliases.is_empty()
             && self.expressions.len() == 1
+            && self.name_load_resolutions.is_empty()
             && self.expressions.get(&expression) == Some(&ty)
             && self.comparison_truthiness.is_empty()
             && self.type_expression_flags.is_empty()
@@ -12584,6 +12660,7 @@ impl<'db> FullExpressionCacheEntry<'db> {
     ) -> ExpressionInference<'db> {
         let extra = (!self.implicit_aliases.is_empty()
             || !self.string_annotations.is_empty()
+            || !self.name_load_resolutions.is_empty()
             || !self.comparison_truthiness.is_empty()
             || !self.type_expression_flags.is_empty()
             || !self.collection_use_constraints.is_empty()
@@ -12606,6 +12683,8 @@ impl<'db> FullExpressionCacheEntry<'db> {
             self.diagnostics.shrink_to_fit();
             Box::new(ExpressionInferenceExtra {
                 implicit_aliases: self.implicit_aliases.into_iter().collect(),
+                name_load_resolutions: (!self.name_load_resolutions.is_empty())
+                    .then(|| Box::new(FrozenMap::from(self.name_load_resolutions))),
                 string_annotations: FrozenSet::from(self.string_annotations),
                 comparison_truthiness: FrozenMap::from(self.comparison_truthiness),
                 expected_types: FrozenMap::from(self.expected_types),
@@ -12802,15 +12881,14 @@ enum DeferredExpressionState {
 
     /// The expression is deferred.
     ///
-    /// In the following example,
+    /// In this example, `tuple` and `int` are deferred. The parsed `ForwardRef` name uses
+    /// [`Self::InStringAnnotation`] because it is also inside a string annotation.
+    ///
     /// ```py
-    /// from __future__ import annotation
+    /// from __future__ import annotations
     ///
     /// a: tuple[int, "ForwardRef"] = ...
     /// ```
-    ///
-    /// The expression `tuple` and `int` are deferred but `ForwardRef` (after parsing) is both
-    /// deferred and in a string annotation context.
     Deferred,
 
     /// The expression is in a string annotation context.
