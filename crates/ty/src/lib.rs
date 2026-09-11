@@ -167,12 +167,13 @@ fn run_check(args: CheckCommand) -> anyhow::Result<ExitStatus> {
         Some(config_file) => {
             ProjectMetadata::from_config_file(config_file.clone(), &project_path, &system, use_uv)?
         }
-        None => ProjectMetadata::discover_with_uv(&project_path, &system, use_uv)?,
+        None => ProjectMetadata::discover_without_uv(&project_path, &system)?.with_use_uv(use_uv),
     };
 
     project_metadata.apply_configuration_files(&system)?;
 
     project_metadata.set_override_options(args.into_options());
+    project_metadata = project_metadata.discover_uv_workspace(&project_path, &system)?;
 
     let mut db = ProjectDatabase::fallible(project_metadata, system)?;
     let project = db.project();

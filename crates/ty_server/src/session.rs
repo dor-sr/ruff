@@ -779,7 +779,8 @@ impl Session {
                 self.use_uv,
             )
         } else {
-            ProjectMetadata::discover_with_uv(workspace_directory, &system, self.use_uv)
+            ProjectMetadata::discover_without_uv(workspace_directory, &system)
+                .map(|metadata| metadata.with_use_uv(self.use_uv))
         };
 
         let (mut metadata, discovery_result) =
@@ -811,7 +812,13 @@ impl Session {
                     .apply_configuration_files(&system)
                     .context("Failed to apply configuration files"),
             )
-            .and_then(|()| ProjectDatabase::fallible(metadata.clone(), system.clone()));
+            .and_then(|()| {
+                metadata = metadata
+                    .clone()
+                    .discover_uv_workspace(workspace_directory, &system)
+                    .context("Failed to discover uv workspace")?;
+                ProjectDatabase::fallible(metadata.clone(), system.clone())
+            });
 
         let mut db = project.unwrap_or_else(|err| {
             tracing::error!(
