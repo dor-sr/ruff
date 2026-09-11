@@ -508,7 +508,8 @@ where
     }
 
     let mut project = if let Some(config_file_override) = config_file_override {
-        ProjectMetadata::from_config_file(config_file_override, &project_path, &system, UseUv::Off)?
+        ProjectMetadata::from_config_file(config_file_override, &project_path, &system)?
+            .with_use_uv(UseUv::Off)
     } else {
         ProjectMetadata::discover(&project_path, &system)?
     };

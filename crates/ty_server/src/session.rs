@@ -776,12 +776,11 @@ impl Session {
                 configuration_file.clone(),
                 workspace_directory,
                 &system,
-                self.use_uv,
             )
         } else {
             ProjectMetadata::discover_without_uv(workspace_directory, &system)
-                .map(|metadata| metadata.with_use_uv(self.use_uv))
-        };
+        }
+        .map(|metadata| metadata.with_use_uv(self.use_uv));
 
         let (mut metadata, discovery_result) =
             match metadata.context("Failed to discover project configuration") {
