@@ -218,10 +218,12 @@ impl ProjectMetadata {
         path: &SystemPath,
         system: &dyn System,
     ) -> Result<ProjectMetadata, ProjectMetadataError> {
-        Self::discover_without_uv(path, system)?.discover_uv_workspace(path, system)
+        Self::discover_without_uv(path, system)?
+            .with_use_uv(UseUv::from_system(system))
+            .discover_uv_workspace(path, system)
     }
 
-    /// Discovers the closest project without considering uv workspace metadata.
+    /// Discovers the closest project without requesting uv workspace metadata.
     pub fn discover_without_uv(
         path: &SystemPath,
         system: &dyn System,
@@ -244,7 +246,7 @@ impl ProjectMetadata {
                 .is_some_and(DiscoveredConfigurationFile::has_ty_configuration)
             {
                 tracing::debug!("Found project at '{}'", project_root);
-                return Ok(metadata.with_use_uv(UseUv::from_system(system)));
+                return Ok(metadata);
             }
 
             if closest_project.is_none() {
@@ -259,7 +261,7 @@ impl ProjectMetadata {
             Self::new(path.file_name().unwrap_or("root"), path.to_path_buf())
         });
         tracing::debug!("Using project at '{}'", metadata.root());
-        Ok(metadata.with_use_uv(UseUv::from_system(system)))
+        Ok(metadata)
     }
 
     /// Incorporates uv's workspace metadata after discovering the project configuration.
@@ -450,6 +452,7 @@ impl ProjectMetadata {
                 .with_environment(environment)
         } else {
             Self::discover_without_uv(path, system)?
+                .with_use_uv(self.use_uv)
                 .with_uv_workspace_environment(system, environment)?
         };
 
