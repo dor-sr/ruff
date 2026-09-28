@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ops::{ControlFlow, Range};
 
@@ -33,7 +34,7 @@ use crate::{Db, FxIndexMap, FxIndexSet, ProgramEnvironment};
 /// Returns `true` if this is the first time we've seen this node in this situation, and should
 /// process it. Returns `false` if this is _not_ the first time we've seen them, and can reuse any
 /// cached results.
-type CheckCache<'a, 'db, L, B> = dyn FnMut(
+type CheckCache<'a, 'db, L, B> = dyn Fn(
         &mut SolutionWalker<'db>,
         &mut ConstraintSetStorage<'db>,
         &mut L,
@@ -77,7 +78,7 @@ fn never_cache<'db, L, B>(
 /// - The node's subtree can affect the current solution, and so we have to descend into the
 ///   subtree to determine which extensions of the current solution are valid.
 ///   ([`PathIs::Uncertain`])
-type PrunePath<'a, 'db, L, B> = dyn FnMut(
+type PrunePath<'a, 'db, L, B> = dyn Fn(
         &mut SolutionWalker<'db>,
         &mut ConstraintSetStorage<'db>,
         &mut L,
@@ -113,7 +114,7 @@ fn never_prune<'db, L, B>(
 
 /// A callback that is invoked by [`visit_node_and_then`][SolutionWalker::visit_node_and_then]
 /// whenever a satisfied path to the `true` terminal is found.
-type ProcessSatisfied<'a, 'db, L, B> = dyn FnMut(
+type ProcessSatisfied<'a, 'db, L, B> = dyn Fn(
         &mut SolutionWalker<'db>,
         &mut ConstraintSetStorage<'db>,
         &mut L,
@@ -224,7 +225,7 @@ impl<'db> SolutionWalker<'db> {
             limits,
             path,
             node,
-            &mut |this, storage, _limits, path, node| {
+            &|this, storage, _limits, path, node| {
                 // See if we've already visited this node on an "equivalent" path, where we only
                 // consider the typevars that can affect the solutions we'd find if we were to
                 // continue walking down the node.
@@ -243,7 +244,7 @@ impl<'db> SolutionWalker<'db> {
                 let key = (node, relevant_path);
                 ControlFlow::Continue(this.explored_nodes.insert(key))
             },
-            &mut |this, storage, limits, path, node| {
+            &|this, storage, limits, path, node| {
                 // Next see if anything in this node can affect the solution we've already
                 // calculated on the current path.
                 let mut visible_typevars = this.inferable_support.clone();
@@ -272,8 +273,8 @@ impl<'db> SolutionWalker<'db> {
                     ControlFlow::Continue(PathIs::Unsatisfied)
                 }
             },
-            &mut |this, storage, limits, path| {
-                let mut satisfied = false;
+            &|this, storage, limits, path| {
+                let satisfied = Cell::new(false);
                 this.validate_satisfied_path(
                     db,
                     env,
@@ -281,9 +282,9 @@ impl<'db> SolutionWalker<'db> {
                     limits,
                     path,
                     validations,
-                    &mut |this, storage, limits, path| {
+                    &|this, storage, limits, path| {
                         if this.found_satisfied_path(db, env, storage, limits, path)? {
-                            satisfied = true;
+                            satisfied.set(true);
                         }
                         ControlFlow::Continue(())
                     },
@@ -293,7 +294,7 @@ impl<'db> SolutionWalker<'db> {
                 // bounds or constraints were violated. To do that, we have to re-check this
                 // path against each one individually.
                 if let Some(validations) = validations
-                    && !satisfied
+                    && !satisfied.into_inner()
                 {
                     let upper_bounds = validations.upper_bounds.as_slice();
                     let constrained = validations.constrained.as_slice();
@@ -324,9 +325,9 @@ impl<'db> SolutionWalker<'db> {
         limits: &mut L,
         path: &mut PathAssignments,
         node: NodeId,
-        check_cache: &mut CheckCache<'_, 'db, L, L::Break>,
-        prune_path: &mut PrunePath<'_, 'db, L, L::Break>,
-        process_satisfied: &mut ProcessSatisfied<'_, 'db, L, L::Break>,
+        check_cache: &CheckCache<'_, 'db, L, L::Break>,
+        prune_path: &PrunePath<'_, 'db, L, L::Break>,
+        process_satisfied: &ProcessSatisfied<'_, 'db, L, L::Break>,
     ) -> ControlFlow<L::Break> {
         limits.visit_node()?;
         if node == ALWAYS_FALSE {
@@ -417,9 +418,9 @@ impl<'db> SolutionWalker<'db> {
             &mut AllowEarlyBreak(limits),
             path,
             node,
-            &mut never_cache,
-            &mut never_prune,
-            &mut |this, storage, limits, path| {
+            &never_cache,
+            &never_prune,
+            &|this, storage, limits, path| {
                 this.validate_satisfied_path(
                     db,
                     env,
@@ -427,7 +428,7 @@ impl<'db> SolutionWalker<'db> {
                     limits,
                     path,
                     validations,
-                    &mut |this, storage, _limits, path| {
+                    &|this, storage, _limits, path| {
                         if this
                             .pending_candidate_solution(db, env, storage, path, None)
                             .is_some()
@@ -462,9 +463,9 @@ impl<'db> SolutionWalker<'db> {
         path: &mut PathAssignments,
         assignment: ConstraintAssignment,
         child: NodeId,
-        check_cache: &mut CheckCache<'_, 'db, L, L::Break>,
-        prune_path: &mut PrunePath<'_, 'db, L, L::Break>,
-        process_satisfied: &mut ProcessSatisfied<'_, 'db, L, L::Break>,
+        check_cache: &CheckCache<'_, 'db, L, L::Break>,
+        prune_path: &PrunePath<'_, 'db, L, L::Break>,
+        process_satisfied: &ProcessSatisfied<'_, 'db, L, L::Break>,
     ) -> ControlFlow<L::Break> {
         // Don't bother adding the assignment and checking the sequent map if the edge takes us to
         // the ALWAYS_FALSE terminal.
@@ -520,7 +521,7 @@ impl<'db> SolutionWalker<'db> {
         limits: &mut L,
         path: &mut PathAssignments,
         constraints: &[ConstraintId],
-        process_satisfied: &mut ProcessSatisfied<'_, 'db, L, L::Break>,
+        process_satisfied: &ProcessSatisfied<'_, 'db, L, L::Break>,
     ) -> ControlFlow<L::Break> {
         let Some((constraint, constraints)) = constraints.split_first() else {
             return process_satisfied(self, storage, limits, path);
@@ -616,7 +617,7 @@ impl<'db> SolutionWalker<'db> {
         limits: &mut L,
         path: &mut PathAssignments,
         validations: Option<&Validations<'db>>,
-        process_satisfied: &mut ProcessSatisfied<'_, 'db, L, L::Break>,
+        process_satisfied: &ProcessSatisfied<'_, 'db, L, L::Break>,
     ) -> ControlFlow<L::Break> {
         let Some(validations) = validations else {
             return process_satisfied(self, storage, limits, path);
@@ -648,7 +649,7 @@ impl<'db> SolutionWalker<'db> {
         path: &mut PathAssignments,
         upper_bounds: &Slice<BoundTypeVarInstance<'db>, UpperBound>,
         constrained: &Slice<BoundTypeVarInstance<'db>, Constrained<'db>>,
-        process_satisfied: &mut ProcessSatisfied<'_, 'db, L, L::Break>,
+        process_satisfied: &ProcessSatisfied<'_, 'db, L, L::Break>,
     ) -> ControlFlow<L::Break> {
         let Some(((_, upper_bound), upper_bounds)) = upper_bounds.split_first() else {
             // We've checked all typevars that have an upper bound. Next check the typevars with
@@ -679,7 +680,7 @@ impl<'db> SolutionWalker<'db> {
             limits,
             path,
             constraints,
-            &mut |this, storage, limits, path| {
+            &|this, storage, limits, path| {
                 this.validate_upper_bound(
                     db,
                     env,
@@ -703,7 +704,7 @@ impl<'db> SolutionWalker<'db> {
         limits: &mut L,
         path: &mut PathAssignments,
         constrained: &Slice<BoundTypeVarInstance<'db>, Constrained<'db>>,
-        process_satisfied: &mut ProcessSatisfied<'_, 'db, L, L::Break>,
+        process_satisfied: &ProcessSatisfied<'_, 'db, L, L::Break>,
     ) -> ControlFlow<L::Break> {
         let Some(((&bound_typevar, constrained_typevar), constrained)) = constrained.split_first()
         else {
@@ -790,7 +791,7 @@ impl<'db> SolutionWalker<'db> {
                     continue;
                 };
 
-                let mut satisfied = false;
+                let satisfied = Cell::new(false);
                 self.visit_constraints_and_then(
                     db,
                     env,
@@ -798,17 +799,17 @@ impl<'db> SolutionWalker<'db> {
                     limits,
                     path,
                     constraints,
-                    &mut |_this, _storage, _limits, _path| {
+                    &|_this, _storage, _limits, _path| {
                         // We don't need to use pending_candidate_solution here to verify that the
                         // solution is actually valid, because we can accept false positives. We
                         // will catch the failure when we fall through to the full family solution
                         // check below.
-                        satisfied = true;
+                        satisfied.set(true);
                         ControlFlow::Continue(())
                     },
                 )?;
 
-                if satisfied {
+                if satisfied.into_inner() {
                     potentially_satisfied_constraint_count += 1;
                 }
             }
@@ -818,8 +819,8 @@ impl<'db> SolutionWalker<'db> {
                 // check any remaining constrained typevars with _no_ validity assignment for this
                 // typevar.
                 let previously_pending = self.pending.len();
-                let mut has_family_solution = false;
-                let mut individual_solution_is_required = false;
+                let has_family_solution = Cell::new(false);
+                let individual_solution_is_required = Cell::new(false);
                 self.validate_constrained(
                     db,
                     env,
@@ -827,7 +828,7 @@ impl<'db> SolutionWalker<'db> {
                     limits,
                     path,
                     constrained,
-                    &mut |this, storage, limits, path| {
+                    &|this, storage, limits, path| {
                         // Check which declared constraints are compatible with this complete
                         // solution for the remaining constrained typevars. Note that we _don't_
                         // update the candidate solution for those declared constraints — we want
@@ -835,7 +836,7 @@ impl<'db> SolutionWalker<'db> {
                         // the individual declared constraints don't _invalidate_ that solution.
                         let mut satisfied_constraint_count = 0;
                         for declared_constraint in &constrained_typevar.declared_constraints {
-                            let mut satisfied = false;
+                            let satisfied = Cell::new(false);
                             if let Some(constraints) = declared_constraint.constraints.as_deref() {
                                 this.visit_constraints_and_then(
                                     db,
@@ -844,7 +845,7 @@ impl<'db> SolutionWalker<'db> {
                                     limits,
                                     path,
                                     constraints,
-                                    &mut |this, storage, _limits, path| {
+                                    &|this, storage, _limits, path| {
                                         if !has_preservable_typevar_evidence
                                             && !this.evidence_satisfies_declared_constraint(
                                                 db,
@@ -860,13 +861,13 @@ impl<'db> SolutionWalker<'db> {
                                             db, env, storage, path, None,
                                         );
                                         if solution.is_some() {
-                                            satisfied = true;
+                                            satisfied.set(true);
                                         }
                                         ControlFlow::Continue(())
                                     },
                                 )?;
                             }
-                            if satisfied {
+                            if satisfied.into_inner() {
                                 satisfied_constraint_count += 1;
                             }
                         }
@@ -885,13 +886,13 @@ impl<'db> SolutionWalker<'db> {
                                 // than one declared constraint. That means we don't want to use
                                 // this family solution _or any other_. We'll create one or more
                                 // individual solutions below.
-                                individual_solution_is_required = true;
+                                individual_solution_is_required.set(true);
                                 ControlFlow::Continue(())
                             }
                             _ => {
                                 // This solution satisfies more than one declared constraint, so
                                 // it's one of the eligible family solutions that we can report.
-                                has_family_solution = true;
+                                has_family_solution.set(true);
                                 process_satisfied(this, storage, limits, path)
                             }
                         }
@@ -903,7 +904,8 @@ impl<'db> SolutionWalker<'db> {
                 // need to fall through and find individual solutions
                 // If every valid assignment for the remaining typevars admitted a family
                 // solution, there is no need to also record the individual constraints.
-                if has_family_solution && !individual_solution_is_required {
+                if has_family_solution.into_inner() && !individual_solution_is_required.into_inner()
+                {
                     return ControlFlow::Continue(());
                 }
 
@@ -1023,9 +1025,9 @@ impl<'db> SolutionWalker<'db> {
         evidence: &CandidateTypeVarSolution<'db>,
         declared_constraint: &DeclaredConstraint<'db>,
         constrained: &Slice<BoundTypeVarInstance<'db>, Constrained<'db>>,
-        process_satisfied: &mut ProcessSatisfied<'_, 'db, L, L::Break>,
+        process_satisfied: &ProcessSatisfied<'_, 'db, L, L::Break>,
     ) -> ControlFlow<L::Break, bool> {
-        let mut satisfied = false;
+        let satisfied = Cell::new(false);
         if let Some(constraints) = declared_constraint.constraints.as_deref() {
             self.with_declared_constraint_solution(
                 db,
@@ -1039,7 +1041,7 @@ impl<'db> SolutionWalker<'db> {
                         limits,
                         path,
                         constraints,
-                        &mut |this, storage, limits, path| {
+                        &|this, storage, limits, path| {
                             // Selecting a concrete constraint must not specialize a caller's fixed
                             // typevar: `S & str <= int` may hold for some `S`, but not for every `S`.
                             if !this.evidence_satisfies_declared_constraint(
@@ -1061,8 +1063,8 @@ impl<'db> SolutionWalker<'db> {
                                 limits,
                                 path,
                                 constrained,
-                                &mut |this, storage, limits, path| {
-                                    satisfied = true;
+                                &|this, storage, limits, path| {
+                                    satisfied.set(true);
                                     process_satisfied(this, storage, limits, path)
                                 },
                             )
@@ -1071,7 +1073,7 @@ impl<'db> SolutionWalker<'db> {
                 },
             )?;
         }
-        ControlFlow::Continue(satisfied)
+        ControlFlow::Continue(satisfied.into_inner())
     }
 
     /// Create a pending candidate solution for the current path.
@@ -1248,7 +1250,7 @@ impl<'db> SolutionWalker<'db> {
         let mut violations = FxHashMap::default();
 
         for (bound_typevar, upper_bound) in upper_bounds {
-            let mut satisfied = false;
+            let satisfied = Cell::new(false);
             if let Some(constraints) = upper_bound.constraints.as_deref() {
                 self.visit_constraints_and_then(
                     db,
@@ -1257,16 +1259,16 @@ impl<'db> SolutionWalker<'db> {
                     limits,
                     path,
                     constraints,
-                    &mut |this, storage, _limits, path| {
+                    &|this, storage, _limits, path| {
                         let pending = this.pending_candidate_solution(db, env, storage, path, None);
                         if pending.is_some() {
-                            satisfied = true;
+                            satisfied.set(true);
                         }
                         ControlFlow::Continue(())
                     },
                 )?;
             }
-            if !satisfied {
+            if !satisfied.into_inner() {
                 violations.insert(*bound_typevar, SolutionViolationKind::UpperBound);
             }
         }
@@ -1278,7 +1280,7 @@ impl<'db> SolutionWalker<'db> {
                 continue;
             };
 
-            let mut satisfied = false;
+            let satisfied = Cell::new(false);
             for declared_constraint in &constrained_typevar.declared_constraints {
                 if let Some(constraints) = declared_constraint.constraints.as_deref() {
                     self.visit_constraints_and_then(
@@ -1288,7 +1290,7 @@ impl<'db> SolutionWalker<'db> {
                         limits,
                         path,
                         constraints,
-                        &mut |this, storage, _limits, path| {
+                        &|this, storage, _limits, path| {
                             if !this.evidence_satisfies_declared_constraint(
                                 db,
                                 env,
@@ -1301,14 +1303,14 @@ impl<'db> SolutionWalker<'db> {
                             let pending =
                                 this.pending_candidate_solution(db, env, storage, path, None);
                             if pending.is_some() {
-                                satisfied = true;
+                                satisfied.set(true);
                             }
                             ControlFlow::Continue(())
                         },
                     )?;
                 }
             }
-            if !satisfied {
+            if !satisfied.into_inner() {
                 violations.insert(*bound_typevar, SolutionViolationKind::Constraints);
             }
         }
