@@ -6,7 +6,9 @@ use std::ops::Range;
 
 use regex::Regex;
 
+use ruff_db::files::File;
 use ruff_db::parsed::parsed_module;
+use ruff_db::source::source_text;
 
 use ruff_index::{IndexVec, newtype_index};
 use ruff_python_ast as ast;
@@ -84,6 +86,35 @@ impl QueryPattern {
             // ... or, if "typed" text could not be found.
             symbol_name.contains(&self.original)
         }
+    }
+
+    /// Returns whether this file might contain a matching symbol.
+    pub(crate) fn may_match_file(&self, db: &dyn Db, file: File) -> bool {
+        // Bound the source scan performed for each query.
+        const MAX_SOURCE_SIZE: usize = 4 * 1024;
+        if !self.original.is_ascii() {
+            return true;
+        }
+        let source = source_text(db, file);
+        // Wildcard imports can introduce names absent from the source. Non-ASCII identifiers
+        // may be normalized by Python or matched by Unicode case folding.
+        if source.len() > MAX_SOURCE_SIZE || !source.is_ascii() || source.contains('*') {
+            return true;
+        }
+        // A matching name requires the query characters to occur in the source in order.
+        // This also accepts matches spread across different names or lines.
+        let mut bytes = source.as_bytes();
+        for needle in self.original.bytes() {
+            let Some(index) = memchr::memchr2(
+                needle.to_ascii_lowercase(),
+                needle.to_ascii_uppercase(),
+                bytes,
+            ) else {
+                return false;
+            };
+            bytes = &bytes[index + 1..];
+        }
+        true
     }
 
     /// Returns true when it is known that this pattern will return `true` for

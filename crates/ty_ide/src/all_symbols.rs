@@ -48,8 +48,15 @@ pub fn all_symbols<'db>(
             let Some(file) = module.file(db) else {
                 return Vec::new();
             };
-            let program_file = ProgramFile::new(db, file, program);
+            let mut symbols = vec![];
+            if query.is_match_symbol_name(module.name(db)) {
+                symbols.push(AllSymbolInfo::from_module(db, module, file));
+            }
+            if !query.may_match_file(db, file) {
+                return symbols;
+            }
 
+            let program_file = ProgramFile::new(db, file, program);
             let symbols_for_file_span = tracing::debug_span!(
                 parent: &all_symbols_span,
                 "symbols_for_file_global_only",
@@ -57,10 +64,6 @@ pub fn all_symbols<'db>(
             );
             let _entered = symbols_for_file_span.entered();
 
-            let mut symbols = vec![];
-            if query.is_match_symbol_name(module.name(db)) {
-                symbols.push(AllSymbolInfo::from_module(db, module, file));
-            }
             for (_, symbol) in symbols_for_file_global_only(db, program_file).search(query) {
                 // Test functions (starting with `test_`) in third-party
                 // packages are almost never useful to import.
@@ -1096,6 +1099,58 @@ def test_helper_xyzxyzxyz():
           | ^^^^^^
         info: Constant ZQZQZQ
         ");
+    }
+
+    #[test]
+    fn unicode_normalization_and_case_folding_match_symbols() {
+        let test = CursorTest::builder()
+            .source("main.py", "<CURSOR>")
+            .source("normalized.py", "class \u{212A}ey: pass")
+            .source("ascii.py", "class Key: pass")
+            .build();
+
+        assert!(test.all_symbols("Key").contains("normalized.py"));
+        assert!(test.all_symbols("\u{212A}ey").contains("ascii.py"));
+    }
+
+    #[test]
+    fn module_names_can_match_without_appearing_in_the_source() {
+        let test = CursorTest::builder()
+            .source("main.py", "<CURSOR>")
+            .source("unique_modulename.py", "value = 1")
+            .build();
+
+        assert!(
+            test.all_symbols("unique_modulename")
+                .contains("unique_modulename.py")
+        );
+    }
+
+    #[test]
+    fn large_files_can_match_after_the_scan_limit() {
+        let padding = " ".repeat(4096);
+        let test = CursorTest::builder()
+            .source("main.py", "<CURSOR>")
+            .source("large.py", format!("if 1: {padding}UniqueNeedle = 1"))
+            .build();
+
+        assert!(test.all_symbols("UniqueNeedle").contains("large.py"));
+    }
+
+    #[test]
+    fn changed_source_can_introduce_matching_symbols() -> std::io::Result<()> {
+        let mut test = CursorTest::builder()
+            .source("main.py", "<CURSOR>")
+            .source("changed.py", "unrelated = 1")
+            .build();
+
+        assert!(test.all_symbols("unrelated").contains("changed.py"));
+        assert_eq!(test.all_symbols("UniqueNeedle"), "No symbols found");
+        test.write_file("changed.py", "class UniqueNeedle: pass")?;
+        assert!(test.all_symbols("UniqueNeedle").contains("changed.py"));
+        test.write_file("changed.py", "class UNIQUENEEDLE: pass")?;
+        assert!(test.all_symbols("UniqueNeedle").contains("UNIQUENEEDLE"));
+        Ok(())
     }
 
     impl CursorTest {
