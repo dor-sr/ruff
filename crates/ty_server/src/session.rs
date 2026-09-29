@@ -778,7 +778,7 @@ impl Session {
                 &system,
             )
         } else {
-            ProjectMetadata::discover_without_uv(workspace_directory, &system)
+            ProjectMetadata::discover(workspace_directory, &system)
         }
         .map(|metadata| metadata.with_use_uv(self.use_uv));
 

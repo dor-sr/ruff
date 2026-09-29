@@ -509,9 +509,8 @@ where
 
     let mut project = if let Some(config_file_override) = config_file_override {
         ProjectMetadata::from_config_file(config_file_override, &project_path, &system)?
-            .with_use_uv(UseUv::Off)
     } else {
-        ProjectMetadata::discover(&project_path, &system)?
+        ProjectMetadata::discover(&project_path, &system)?.with_use_uv(UseUv::from_system(&system))
     };
     if let Some(fallback_options) = fallback_options {
         project.set_fallback_options(fallback_options);
@@ -520,6 +519,7 @@ where
     if let Some(override_options) = override_options {
         project.set_override_options(override_options);
     }
+    project = project.discover_uv_workspace(&project_path, &system)?;
 
     // We need a chance to create the directories here.
     let merged_options = project.to_merged_options();

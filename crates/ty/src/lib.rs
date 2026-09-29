@@ -167,7 +167,7 @@ fn run_check(args: CheckCommand) -> anyhow::Result<ExitStatus> {
         Some(config_file) => {
             ProjectMetadata::from_config_file(config_file.clone(), &project_path, &system)?
         }
-        None => ProjectMetadata::discover_without_uv(&project_path, &system)?,
+        None => ProjectMetadata::discover(&project_path, &system)?,
     }
     .with_use_uv(use_uv);
 

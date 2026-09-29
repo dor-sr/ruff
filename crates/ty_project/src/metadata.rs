@@ -202,23 +202,9 @@ impl ProjectMetadata {
     /// to resolve the project's root.
     ///
     /// 1. The closest `pyproject.toml` with a `tool.ty` section or `ty.toml`.
-    /// 1. The uv workspace root, if uv integration is enabled.
     /// 1. The closest `pyproject.toml`.
     /// 1. Fallback to use `path` as the root and use the default settings.
-    pub fn discover(
-        path: &SystemPath,
-        system: &dyn System,
-    ) -> Result<ProjectMetadata, ProjectMetadataError> {
-        Self::discover_without_uv(path, system)?
-            .with_use_uv(UseUv::from_system(system))
-            .discover_uv_workspace(path, system)
-    }
-
-    /// Discovers the closest project without requesting uv workspace metadata.
-    pub fn discover_without_uv(
-        path: &SystemPath,
-        system: &dyn System,
-    ) -> Result<Self, ProjectMetadataError> {
+    pub fn discover(path: &SystemPath, system: &dyn System) -> Result<Self, ProjectMetadataError> {
         tracing::debug!("Searching for a project in '{path}'");
 
         if !system.is_directory(path) {
@@ -441,8 +427,7 @@ impl ProjectMetadata {
             Self::from_config_file(config_file.to_path_buf(), self.root(), system)?
                 .with_environment(environment)
         } else {
-            Self::discover_without_uv(path, system)?
-                .with_uv_workspace_environment(system, environment)?
+            Self::discover(path, system)?.with_uv_workspace_environment(system, environment)?
         };
 
         Ok(metadata.with_applied_options_from(self))
@@ -1010,7 +995,7 @@ unclosed table, expected `]`
             ),
         ])?;
 
-        let mut project = ProjectMetadata::discover_without_uv(&member, &system)?;
+        let mut project = ProjectMetadata::discover(&member, &system)?;
         project.apply_configuration_files(&system)?;
         assert_eq!(project.root(), &*member);
         assert_eq!(
@@ -1065,7 +1050,7 @@ unclosed table, expected `]`
             ),
         ])?;
 
-        let project = ProjectMetadata::discover_without_uv(&member, &system)?;
+        let project = ProjectMetadata::discover(&member, &system)?;
         let project =
             project.with_uv_workspace_environment(&system, uv_workspace(&root, &system)?)?;
 
@@ -1093,7 +1078,7 @@ unclosed table, expected `]`
             ),
         ])?;
 
-        let project = ProjectMetadata::discover_without_uv(&member, &system)?;
+        let project = ProjectMetadata::discover(&member, &system)?;
         assert_eq!(
             project.configuration_file,
             Some(DiscoveredConfigurationFile::PyProjectWithTy(
@@ -1132,7 +1117,7 @@ unclosed table, expected `]`
         ])?;
 
         let environment = uv_workspace(&root, &system)?;
-        let mut project = ProjectMetadata::discover_without_uv(&member, &system)?
+        let mut project = ProjectMetadata::discover(&member, &system)?
             .with_use_uv(UseUv::On)
             .with_uv_workspace_environment(&system, environment.clone())?;
         project.apply_configuration_files(&system)?;
@@ -1215,6 +1200,14 @@ unclosed table, expected `]`
 
         let project = ProjectMetadata::discover(&member, &system)?;
 
+        assert_eq!(project.use_uv, UseUv::Off);
+        assert!(project.environment.metadata.is_none());
+        assert!(project.environment.error.is_none());
+
+        let project = project
+            .with_use_uv(UseUv::from_system(&system))
+            .discover_uv_workspace(&member, &system)?;
+
         assert_eq!(project.root(), &*member);
 
         Ok(())
@@ -1240,7 +1233,7 @@ unclosed table, expected `]`
             ),
         ])?;
 
-        let project = ProjectMetadata::discover_without_uv(&member, &system)?;
+        let project = ProjectMetadata::discover(&member, &system)?;
         let mut project =
             project.with_uv_workspace_environment(&system, uv_workspace(&root, &system)?)?;
         project.apply_configuration_files(&system)?;
@@ -1293,7 +1286,7 @@ unclosed table, expected `]`
         ])?;
 
         let environment = uv_workspace(&workspace, &system)?;
-        let project = ProjectMetadata::discover_without_uv(&member, &system)?
+        let project = ProjectMetadata::discover(&member, &system)?
             .with_uv_workspace_environment(&system, environment)?;
 
         assert_eq!(project.root(), &*root);
@@ -1406,7 +1399,7 @@ unclosed table, expected `]`
             )?),
             error: None,
         };
-        let mut project = ProjectMetadata::discover_without_uv(&member, &system)?
+        let mut project = ProjectMetadata::discover(&member, &system)?
             .with_uv_workspace_environment(&system, uv_environment)?;
         project.set_fallback_options(Options::from_toml_str(
             r#"
@@ -1528,7 +1521,7 @@ unclosed table, expected `]`
             )?),
             error: None,
         };
-        let mut project = ProjectMetadata::discover_without_uv(&root, &system)?
+        let mut project = ProjectMetadata::discover(&root, &system)?
             .with_uv_workspace_environment(&system, uv_environment)?;
         project.apply_configuration_files(&system)?;
 
