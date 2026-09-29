@@ -4,7 +4,7 @@ use std::ops::{ControlFlow, Range};
 
 use indexmap::map::Slice;
 use rustc_hash::{FxHashMap, FxHashSet};
-use smallvec::SmallVec;
+use smallvec::{SmallVec, smallvec};
 
 use crate::types::constraints::paths::PathAssignments;
 use crate::types::constraints::support::Support;
@@ -123,10 +123,20 @@ type ProcessSatisfied<'a, 'db, L, B> = dyn Fn(
     ) -> ControlFlow<B>
     + 'a;
 
+/// Whether [`SolutionWalker`] walks a BDD or its negation. (We can walk the negation of a BDD
+/// lazily, which is more efficient than actually constructing the negation and then walking it
+/// normally.)
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Polarity {
+    Positive,
+    Negative,
+}
+
 pub(super) struct SolutionWalker<'db> {
     source_orders: FxIndexSet<ConstraintId>,
     inferable: TypeVarSet<'db>,
     inferable_support: Support,
+    polarity: Polarity,
 
     declared_constraint_solutions: FxHashMap<BoundTypeVarIdentity<'db>, Type<'db>>,
 
@@ -163,12 +173,14 @@ impl<'db> SolutionWalker<'db> {
         storage: &mut ConstraintSetStorage<'db>,
         source_orders: FxIndexSet<ConstraintId>,
         inferable: TypeVarSet<'db>,
+        polarity: Polarity,
     ) -> Self {
         let inferable_support = Support::from_typevar_set(db, storage, inferable);
         Self {
             source_orders,
             inferable,
             inferable_support,
+            polarity,
             declared_constraint_solutions: FxHashMap::default(),
             explored_nodes: FxHashSet::default(),
             pending: Vec::default(),
@@ -345,7 +357,9 @@ impl<'db> SolutionWalker<'db> {
         process_satisfied: &ProcessSatisfied<'_, 'db, L, L::Break>,
     ) -> ControlFlow<L::Break> {
         limits.visit_node()?;
-        if node == ALWAYS_FALSE {
+        if let (Polarity::Positive, ALWAYS_FALSE) | (Polarity::Negative, ALWAYS_TRUE) =
+            (self.polarity, node)
+        {
             return ControlFlow::Continue(());
         }
 
@@ -354,7 +368,9 @@ impl<'db> SolutionWalker<'db> {
         }
 
         // If the current node is ALWAYS_TRUE, we can immediately report the current solution.
-        if node == ALWAYS_TRUE {
+        if let (Polarity::Positive, ALWAYS_TRUE) | (Polarity::Negative, ALWAYS_FALSE) =
+            (self.polarity, node)
+        {
             return process_satisfied(self, storage, limits, path);
         }
 
@@ -367,11 +383,26 @@ impl<'db> SolutionWalker<'db> {
         // At this point we actually have to walk the outgoing edges of this node.
         let interior = storage.interior_node_data(node);
         let constraint = interior.constraint;
-        for (assignment, child) in [
-            (constraint.when_true(), interior.if_true),
-            (constraint.when_unconstrained(), interior.if_uncertain),
-            (constraint.when_false(), interior.if_false),
-        ] {
+        let edges: SmallVec<[(ConstraintAssignment, NodeId); 3]> =
+            if self.polarity == Polarity::Positive {
+                smallvec![
+                    (constraint.when_true(), interior.if_true),
+                    (constraint.when_unconstrained(), interior.if_uncertain),
+                    (constraint.when_false(), interior.if_false),
+                ]
+            } else {
+                smallvec![
+                    (
+                        constraint.when_true(),
+                        interior.if_true.or(storage, interior.if_uncertain)
+                    ),
+                    (
+                        constraint.when_false(),
+                        interior.if_false.or(storage, interior.if_uncertain)
+                    ),
+                ]
+            };
+        for (assignment, child) in edges {
             self.visit_edge(
                 db,
                 env,
@@ -484,7 +515,9 @@ impl<'db> SolutionWalker<'db> {
     ) -> ControlFlow<L::Break> {
         // Don't bother adding the assignment and checking the sequent map if the edge takes us to
         // the ALWAYS_FALSE terminal.
-        if child == ALWAYS_FALSE {
+        if let (Polarity::Positive, ALWAYS_FALSE) | (Polarity::Negative, ALWAYS_TRUE) =
+            (self.polarity, child)
+        {
             return ControlFlow::Continue(());
         }
 
