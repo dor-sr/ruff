@@ -711,6 +711,43 @@ reveal_type(C(1).value)  # revealed: int
 C("a")  # error: [invalid-argument-type]
 ```
 
+## Recursive class decorators
+
+Regression tests for <https://github.com/astral-sh/ty/issues/4615>.
+
+### Mutually recursive lambdas
+
+```py
+(decorator := (lambda: replacement))
+
+@0  # error: [call-non-callable]
+@decorator  # error: [too-many-positional-arguments]
+class C:
+    pass
+
+(replacement := (lambda: C))
+```
+
+### Recursive collection
+
+```py
+@0  # error: [call-non-callable]
+@lambda: {replacement}  # error: [too-many-positional-arguments]
+class C:
+    pass
+
+if condition:  # error: [unresolved-reference]
+    raise ValueError
+
+# error: [call-non-callable]
+# error: [invalid-argument-type]
+@{**(lambda: replacement)}
+def replacement():
+    pass
+
+replacement = C
+```
+
 ## Explicitly dynamic class decorators
 
 Unlike `Unknown`, an explicit `Any` return type replaces the class binding:

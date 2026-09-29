@@ -1132,6 +1132,24 @@ def incompatible(
     reveal_type(contravariant(second))  # revealed: Target[((str, /)) | ((bytes, /))]
 ```
 
+## Recursive specialization in a loop
+
+Regression test for <https://github.com/astral-sh/ty/issues/4615>. Specializing a decorated class
+with its previous specialization terminates even when the parameter list cannot be resolved.
+
+```py
+from typing import Generic, ParamSpec
+
+P = ParamSpec("P")
+
+@0  # error: [call-non-callable]
+class C(Generic[P]):
+    pass
+
+while -():  # error: [unsupported-operator]
+    (value := C[value])  # error: [possibly-unresolved-reference]
+```
+
 ## `ParamSpec` cannot specialize a `TypeVar`, and vice versa
 
 <!-- snapshot-diagnostics -->

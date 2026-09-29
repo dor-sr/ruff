@@ -514,6 +514,20 @@ def broaden_parameters[**P](consumer: CallbackConsumer[[]]) -> CallbackConsumer[
     return consumer  # error: [invalid-return-type]
 ```
 
+## Recursive specialization in a loop
+
+Regression test for <https://github.com/astral-sh/ty/issues/4615>. Specializing a decorated class
+with its previous specialization terminates even when the parameter list cannot be resolved.
+
+```py
+@0  # error: [call-non-callable]
+class C[**P]:
+    pass
+
+while -():  # error: [unsupported-operator]
+    (value := C[value])  # error: [possibly-unresolved-reference]
+```
+
 ## `ParamSpec` cannot specialize a `TypeVar`, and vice versa
 
 <!-- snapshot-diagnostics -->

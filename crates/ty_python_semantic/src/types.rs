@@ -3654,10 +3654,18 @@ impl<'db> Type<'db> {
                     .head_ids()
                     .any(|id| ty.same_divergent_marker(Type::divergent(id)))
             });
-        cycle.head_ids().fold(normalized, |ty, id| {
-            ty.recursive_type_normalized_impl(db, env, Type::divergent(id), false)
-                .unwrap_or(Type::divergent(id))
-        })
+        // In the initial iteration, other cycle heads may not yet have constructed the types
+        // around their placeholders. For A = Unknown | B and B = set[A], dropping B's placeholder
+        // while normalizing A would seed unbounded growth: Unknown, Unknown | set[Unknown], etc.
+        // Preserve those placeholders until the next iteration, then normalize all cycle heads
+        // so resolved placeholders do not remain in the final type.
+        cycle
+            .head_ids()
+            .filter(|id| cycle.iteration() > 0 || *id == cycle.id())
+            .fold(normalized, |ty, id| {
+                ty.recursive_type_normalized_impl(db, env, Type::divergent(id), false)
+                    .unwrap_or(Type::divergent(id))
+            })
     }
 
     /// Discard unresolved narrowing while preserving recursive structure around it. A bare
