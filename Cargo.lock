@@ -4899,6 +4899,7 @@ name = "ty_python_semantic"
 version = "0.0.15"
 dependencies = [
  "anyhow",
+ "arrayvec",
  "bitflags 2.13.1",
  "camino",
  "char_str",
