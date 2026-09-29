@@ -2420,15 +2420,9 @@ impl NodeId {
             Node::AlwaysFalse => false,
             Node::Interior(interior) => {
                 let source_orders = storage.calculate_source_orders(source_order);
-                let mut walker = SolutionWalker::new(
-                    db,
-                    storage,
-                    source_orders,
-                    TypeVarSet::None,
-                    Polarity::Negative,
-                );
+                let mut walker = SolutionWalker::new(db, storage, source_orders, TypeVarSet::None);
                 let mut path = interior.path_assignments(db, env, storage, source_order);
-                walker.is_never_satisfied(db, env, storage, &mut path, self)
+                walker.is_never_satisfied(db, env, storage, &mut path, Polarity::Negative, self)
             }
         }
     }
@@ -2493,15 +2487,10 @@ impl NodeId {
                     false
                 } else {
                     let source_orders = storage.calculate_source_orders(source_order);
-                    let mut walker = SolutionWalker::new(
-                        db,
-                        storage,
-                        source_orders,
-                        TypeVarSet::None,
-                        Polarity::Positive,
-                    );
+                    let mut walker =
+                        SolutionWalker::new(db, storage, source_orders, TypeVarSet::None);
                     let mut path = interior.path_assignments(db, env, storage, source_order);
-                    walker.is_never_satisfied(db, env, storage, &mut path, self)
+                    walker.is_never_satisfied(db, env, storage, &mut path, Polarity::Positive, self)
                 };
                 storage.never_satisfied_cache.insert(self, result);
                 result
@@ -3599,8 +3588,7 @@ impl<'db> CandidateSolutions<'db> {
             return ControlFlow::Continue(path_bounds);
         }
 
-        let mut walker =
-            SolutionWalker::new(db, storage, source_orders, inferable, Polarity::Positive);
+        let mut walker = SolutionWalker::new(db, storage, source_orders, inferable);
         // Sequent discovery must also happen in source order. Sorting the collected paths is
         // too late: sequent pairs are not commutative, and TDD traversal order can otherwise
         // discard gradual evidence before solution extraction.
@@ -3613,6 +3601,7 @@ impl<'db> CandidateSolutions<'db> {
             limits,
             &mut path,
             node_support.as_ref(),
+            Polarity::Positive,
             node,
         )?;
         ControlFlow::Continue(walker.finish())
