@@ -239,9 +239,13 @@ use ty_python_core::{
 /// Caching each prefix lets the next case reuse the already-normalized subject instead of
 /// rebuilding it from the union of all preceding patterns, which can repeatedly distribute the
 /// same intersections.
+///
+/// During a cycle, retain the incoming subject until narrowing is known. The subject type is part
+/// of the query key and can change on every iteration, so a query-specific divergent marker would
+/// introduce a new recursive identity on each iteration and prevent inference from converging.
 #[salsa::tracked(
     returns(copy),
-    cycle_initial = |_, id, _, _| Type::divergent(id),
+    cycle_initial = |_, _, _, subject_ty| subject_ty,
     cycle_fn = |db: &'db dyn Db, cycle, previous: &Type<'db>, result: Type<'db>, predicate: PatternPredicate<'db>, _| {
         let env = ProgramEnvironment::from_scope(predicate.subject(db).scope(db));
         result.cycle_normalized(db, &env, *previous, cycle)
@@ -270,9 +274,11 @@ pub(crate) fn type_narrowed_by_previous_patterns<'db>(
 /// Narrow `subject_ty` by a match pattern.
 ///
 /// This result is also the preceding-pattern prefix for the next unguarded case.
+/// Cycle recovery retains the incoming subject for the same reason as
+/// [`type_narrowed_by_previous_patterns`].
 #[salsa::tracked(
     returns(copy),
-    cycle_initial = |_, id, _, _| Type::divergent(id),
+    cycle_initial = |_, _, _, subject_ty| subject_ty,
     cycle_fn = |db: &'db dyn Db, cycle, previous: &Type<'db>, result: Type<'db>, predicate: PatternPredicate<'db>, _| {
         let env = ProgramEnvironment::from_scope(predicate.subject(db).scope(db));
         result.cycle_normalized(db, &env, *previous, cycle)

@@ -3470,6 +3470,20 @@ match capture_from_later_global():
         reveal_type(captured)  # revealed: int
 ```
 
+## Match subject refers to a later capture
+
+Regression test for <https://github.com/astral-sh/ty/issues/4610>.
+
+```py
+subject = [1]
+for _ in [0]:
+    match [x for x in subject]:
+        case subject.attr:  # error: [unresolved-attribute]
+            pass
+        case b"" as subject:
+            pass
+```
+
 ## Value patterns
 
 Value patterns are evaluated by equality, which is overridable. Apart from the optimistic treatment
