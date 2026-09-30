@@ -713,7 +713,8 @@ C("a")  # error: [invalid-argument-type]
 
 ## Recursive class decorators
 
-Regression tests for <https://github.com/astral-sh/ty/issues/4615>.
+Regression tests for <https://github.com/astral-sh/ty/issues/4615> and
+<https://github.com/astral-sh/ty/issues/4607>.
 
 ### Mutually recursive lambdas
 
@@ -746,6 +747,28 @@ def replacement():
     pass
 
 replacement = C
+```
+
+### Type alias in a decorator
+
+A type alias refers to a recursive lambda before its name is rebound to the decorated class. We
+report the invalid type expression and decorator without exhausting inference-cycle iterations.
+
+```toml
+[environment]
+python-version = "3.12"
+```
+
+```py
+value = lambda: value
+try:
+    type Alias = value  # error: [invalid-type-form]
+finally:
+    @[Alias]  # error: [call-non-callable]
+    class Example:
+        pass
+
+    value = Example
 ```
 
 ## Explicitly dynamic class decorators
